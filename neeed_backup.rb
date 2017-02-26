@@ -1,9 +1,15 @@
 require 'open-uri'
 require 'mechanize'
+require 'csv'
 require 'pry'
 
 class Item
   attr_accessor :id, :name, :vendor, :url, :price, :image_url
+
+  def to_csv
+    [id, name, vendor, price, url, image_url]
+  end
+
 end
 
 class List
@@ -14,18 +20,25 @@ class List
     self.id = id
   end
 
-  def output
-    #create sub-sub folder 'list-images'
-    #name & write images
+  def output(path)
+    img_output_path = "#{path}#{name}"
+    Dir.mkdir(img_output_path) unless File.directory?(img_output_path)
+
+    items.each do |item|
+      IO.copy_stream(open(item.image_url),
+        "#{img_output_path}/#{item.id}.jpg")
+    end
+
+    CSV.open("#{path}#{name}.csv", "w") do |csv|
+      items.each { |item| csv << item.to_csv }
+    end
+
   end
 
-  def self.output_all(lists)
-    #create one big csv
-  end
-
-  private
-
-  def make_csv_line
+  def self.output_all_as_csv(lists, path)
+    CSV.open("#{path}#{all_lists}.csv", "w") do |csv|
+      lists.each { |list| list.items.each { |item| csv << item.to_csv } }
+    end
   end
 
 end
@@ -36,6 +49,7 @@ class NeeedAgent
   def initialize(user, pass)
     @agent = Mechanize.new
     login(user, pass)
+    # agent.redirection_limit = 2
   end
 
   def fetch_lists
@@ -64,7 +78,7 @@ class NeeedAgent
   def build_item(item_source)
     item = Item.new
     item.id = item_source.attributes['id'].value
-    item.image_url = item_source.css('.prod-img').first.css('img').first.attributes['src'].value
+    item.image_url = 'http://neeed.com/' + item_source.css('.prod-img').first.css('img').first.attributes['src'].value
     item.name = item_source.css('.prod-img').first.css('img').first.attributes['alt'].value
     item.vendor = item_source.css("a[itemprop='brand']").text.strip
     item.price = item_source.css('.price').text
@@ -72,9 +86,11 @@ class NeeedAgent
     item.url =
       begin
         agent.get( item_source.css('.prod-img').first.attributes['href'].value ).uri.to_s
-      rescue Mechanize::ResponseCodeError
-        agent.history[-1].uri.to_s
+      rescue Mechanize::ResponseCodeError, Mechanize::RedirectLimitReachedError => e
+        e.page.uri.to_s
       end
+
+    item
   end
 
   def homepage
@@ -98,10 +114,21 @@ end
 def backup(username, pass)
   neeed = NeeedAgent.new(username, pass)
   lists = neeed.fetch_lists
-  lists.each { |list| lists.items = neeed.fetch_items(list) }
+  [lists.first].each { |list| list.items = neeed.fetch_items(list) }
 
-  #lists.each { |list| list.output }
-  # List.output_all(lists)
+  output_dir_name = "need_backup_#{Time.now.strftime("%d-%m-%y")}"
+  suffix, i = '', 0
+  until !File.directory?(output_dir_name + suffix) do
+    i += 1
+    suffix = " #{i}"
+  end
+
+  output_dir_name.concat(suffix)
+  output_dir = Dir.mkdir(output_dir_name)
+  output_path = "#{Dir.pwd}/#{output_dir_name}/"
+  
+  lists.each { |list| list.output(output_path) }
+  List.output_all_as_csv(lists)
 end
 
 backup(ARGV[0], ARGV[1])
