@@ -4,7 +4,7 @@ require 'csv'
 require 'pry'
 
 class Item
-  attr_accessor :id, :name, :vendor, :url, :price, :image_url
+  attr_accessor :id, :name, :vendor, :url, :price, :image_url, :image
 
   def to_csv
     [id, name, vendor, price, url, image_url]
@@ -23,11 +23,7 @@ class List
   def output(path)
     img_output_path = "#{path}#{name}"
     Dir.mkdir(img_output_path) unless File.directory?(img_output_path)
-
-    items.each do |item|
-      IO.copy_stream(open(item.image_url),
-        "#{img_output_path}/#{item.id}.jpg")
-    end
+    items.each { |item| item.image.save "#{img_output_path}/#{item.id}.jpg" }
 
     CSV.open("#{path}#{name}.csv", "w") do |csv|
       items.each { |item| csv << item.to_csv }
@@ -36,7 +32,7 @@ class List
   end
 
   def self.output_all_as_csv(lists, path)
-    CSV.open("#{path}#{all_lists}.csv", "w") do |csv|
+    CSV.open(path + 'all_lists.csv', "w") do |csv|
       lists.each { |list| list.items.each { |item| csv << item.to_csv } }
     end
   end
@@ -47,9 +43,13 @@ class NeeedAgent
   attr_accessor :agent, :u_id
 
   def initialize(user, pass)
-    @agent = Mechanize.new
+    @agent = Mechanize.new { |agent|
+      agent.keep_alive = false
+      agent.open_timeout = 5
+      agent.read_timeout = 5
+    }
+
     login(user, pass)
-    # agent.redirection_limit = 2
   end
 
   def fetch_lists
@@ -60,7 +60,7 @@ class NeeedAgent
     end
   end
 
-  def fetch_items(list, offset=20)
+  def fetch_items(list, offset=0)
     result = agent.get(list_url(list.name, offset))
 
     if result.links.empty?
@@ -78,16 +78,20 @@ class NeeedAgent
   def build_item(item_source)
     item = Item.new
     item.id = item_source.attributes['id'].value
-    item.image_url = 'http://neeed.com/' + item_source.css('.prod-img').first.css('img').first.attributes['src'].value
     item.name = item_source.css('.prod-img').first.css('img').first.attributes['alt'].value
     item.vendor = item_source.css("a[itemprop='brand']").text.strip
     item.price = item_source.css('.price').text
 
+    item.image_url = 'http://neeed.com/' + item_source.css('.prod-img').first.css('img').first.attributes['src'].value
+    
+    item.image = agent.get(item.image_url)
+
     item.url =
       begin
         agent.get( item_source.css('.prod-img').first.attributes['href'].value ).uri.to_s
-      rescue Mechanize::ResponseCodeError, Mechanize::RedirectLimitReachedError => e
-        e.page.uri.to_s
+      # rescue Mechanize::ResponseCodeError, Mechanize::RedirectLimitReachedError, SocketError => e
+      rescue => e
+        e.respond_to?(:page) ? e.page.uri.to_s : nil
       end
 
     item
@@ -112,23 +116,23 @@ end
 
 
 def backup(username, pass)
-  neeed = NeeedAgent.new(username, pass)
-  lists = neeed.fetch_lists
-  [lists.first].each { |list| list.items = neeed.fetch_items(list) }
-
   output_dir_name = "need_backup_#{Time.now.strftime("%d-%m-%y")}"
   suffix, i = '', 0
+
   until !File.directory?(output_dir_name + suffix) do
     i += 1
-    suffix = " #{i}"
+    suffix = "_#{i}"
   end
 
   output_dir_name.concat(suffix)
   output_dir = Dir.mkdir(output_dir_name)
   output_path = "#{Dir.pwd}/#{output_dir_name}/"
-  
+
+  neeed = NeeedAgent.new(username, pass)
+  lists = neeed.fetch_lists
+  lists.each { |list| list.items = neeed.fetch_items(list) }
   lists.each { |list| list.output(output_path) }
-  List.output_all_as_csv(lists)
+  List.output_all_as_csv(lists, output_path)
 end
 
 backup(ARGV[0], ARGV[1])
