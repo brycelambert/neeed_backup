@@ -1,7 +1,6 @@
 require 'open-uri'
 require 'mechanize'
 require 'csv'
-require 'pry'
 
 class Item
   attr_accessor :id, :name, :vendor, :url, :price, :image_url, :image
